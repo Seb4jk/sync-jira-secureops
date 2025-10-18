@@ -10,58 +10,90 @@ import { CVE, AffectedServer } from '../types';
 import { logger } from '../utils/logger';
 
 /**
- * Interfaz para la respuesta de Elasticsearch
+ * Interfaz para la respuesta de Elasticsearch del nuevo endpoint wazuh-alerts
  */
 interface ElasticsearchHit {
   _index: string;
   _id: string;
   _score: number;
   _source: {
+    cluster: {
+      node: string;
+      name: string;
+    };
     agent: {
-      id: string;
+      ip: string;
       name: string;
-      type: string;
-      version: string;
+      id: string;
     };
-    host: {
-      os: {
-        full: string;
-        kernel: string;
-        name: string;
-        platform: string;
+    manager: {
+      name: string;
+    };
+    data: {
+      vulnerability: {
+        severity: string;
+        package: {
+          condition: string;
+          name: string;
+          source: string;
+          version: string;
+          architecture: string;
+        };
+        assigner: string;
+        published: string;
+        classification: string;
+        title: string;
         type: string;
-        version: string;
+        rationale: string;
+        reference: string;
+        score: {
+          version: string;
+          base: string;
+        };
+        cve: string;
+        scanner: {
+          reference: string;
+        };
+        enumeration: string;
+        cvss: {
+          cvss3: {
+            base_score: string;
+            vector: {
+              user_interaction: string;
+              integrity_impact: string;
+              scope: string;
+              availability: string;
+              confidentiality_impact: string;
+              attack_vector: string;
+              privileges_required: string;
+            };
+          };
+        };
+        updated: string;
+        status: string;
       };
     };
-    package: {
-      architecture: string;
+    rule: {
+      firedtimes: number;
+      mail: boolean;
+      level: number;
+      pci_dss: string[];
+      tsc: string[];
       description: string;
-      installed: string;
-      name: string;
-      size: number;
-      type: string;
-      version: string;
-    };
-    vulnerability: {
-      category: string;
-      classification: string;
-      description: string;
-      detected_at: string;
-      enumeration: string;
+      groups: string[];
       id: string;
-      published_at: string;
-      reference: string;
-      scanner: {
-        source: string;
-        vendor: string;
-      };
-      score: {
-        base: number;
-        version: string;
-      };
-      severity: string;
-      under_evaluation: boolean;
+      gdpr: string[];
     };
+    decoder: {
+      name: string;
+    };
+    input: {
+      type: string;
+    };
+    "@timestamp": string;
+    location: string;
+    id: string;
+    timestamp: string;
   };
 }
 
@@ -98,21 +130,50 @@ export class WazuhService {
       // Crear una instancia temporal para la consulta (igual que en Postman)
       const queryInstance = this.createWazuhAxiosInstance();
 
-      // Query para buscar vulnerabilidades High y Critical (exactamente como Postman)
+      // Query específica para buscar vulnerabilidades High y Critical con filtros detallados
       const query = {
+        size: 9000,
         query: {
           bool: {
-            should: [
-              { match: { 'vulnerability.severity': 'High' } },
-              { match: { 'vulnerability.severity': 'Critical' } }
-            ],
-            minimum_should_match: 1
+            filter: [
+              { match_all: {} },
+              { match_phrase: { "cluster.name": "wazuh_cluster" } },
+              { match_phrase: { "rule.groups": "vulnerability-detector" } },
+              { match_phrase: { "data.vulnerability.status": "Active" } },
+              {
+                bool: {
+                  should: [
+                    { match_phrase: { "data.vulnerability.severity": "High" } },
+                    { match_phrase: { "data.vulnerability.severity": "Critical" } }
+                  ],
+                  minimum_should_match: 1
+                }
+              },
+              {
+                range: {
+                  "rule.level": {
+                    gte: 12,
+                    lt: 20
+                  }
+                }
+              },
+              {
+                range: {
+                  timestamp: {
+                    gte: "now-1y",
+                    lte: "now",
+                    format: "strict_date_optional_time"
+                  }
+                }
+              },
+              { match_phrase: { "manager.name": "ip-10-0-0-145" } }
+            ]
           }
         }
       };
 
       logger.info('Enviando consulta a Elasticsearch', { 
-        url: `${config.wazuh.apiUrl}/wazuh-states-vulnerabilities-*/_search?pretty`,
+        url: `${config.wazuh.apiUrl}/wazuh-alerts-*/_search?pretty`,
         query,
         headers: {
           'Content-Type': 'application/json',
@@ -122,7 +183,7 @@ export class WazuhService {
 
       // Hacer consulta a Elasticsearch
       const response = await queryInstance.post<ElasticsearchResponse>(
-        `${config.wazuh.apiUrl}/wazuh-states-vulnerabilities-*/_search?pretty`,
+        `${config.wazuh.apiUrl}/wazuh-alerts-*/_search?pretty`,
         query
       );
 
@@ -187,7 +248,8 @@ export class WazuhService {
 
     for (const hit of hits) {
       const source = hit._source;
-      const cveId = source.vulnerability.id;
+      const vulnerability = source.data.vulnerability;
+      const cveId = vulnerability.cve;
 
       // Si el CVE ya existe, agregar el servidor afectado
       if (cveMap.has(cveId)) {
@@ -195,7 +257,7 @@ export class WazuhService {
         
         // Verificar si el servidor ya está en la lista
         const serverExists = existingCVE.affectedServers.some(
-          (server) => server.id === source.agent.id && server.name === source.package.name
+          (server) => server.id === source.agent.id && server.package === vulnerability.package.name
         );
 
         if (!serverExists) {
@@ -206,12 +268,12 @@ export class WazuhService {
         const cve: CVE = {
           id: cveId,
           cve: cveId,
-          title: this.extractTitle(source.vulnerability.description),
-          severity: this.normalizeSeverity(source.vulnerability.severity),
-          cvss: source.vulnerability.score.base,
-          description: source.vulnerability.description,
-          published: source.vulnerability.published_at,
-          modified: source.vulnerability.detected_at,
+          title: this.extractTitle(vulnerability),
+          severity: this.normalizeSeverity(vulnerability.severity),
+          cvss: parseFloat(vulnerability.cvss.cvss3.base_score),
+          description: this.buildDescription(vulnerability),
+          published: vulnerability.published,
+          modified: vulnerability.updated,
           affectedServers: [this.mapToAffectedServer(source)],
         };
 
@@ -226,14 +288,16 @@ export class WazuhService {
    * Mapea un hit de Elasticsearch a un servidor afectado
    */
   private mapToAffectedServer(source: ElasticsearchHit['_source']): AffectedServer {
+    const vulnerability = source.data.vulnerability;
+    
     return {
       id: source.agent.id,
       name: source.agent.name,
       hostname: source.agent.name,
-      ip: 'N/A', // Elasticsearch no proporciona IP directamente
-      os: source.host.os.full,
-      package: source.package.name,
-      version: source.package.version,
+      ip: source.agent.ip,
+      os: vulnerability.package.architecture || 'Unknown', // Usar arquitectura como OS o 'Unknown' por defecto
+      package: vulnerability.package.name,
+      version: vulnerability.package.version,
     };
   }
 
@@ -257,29 +321,36 @@ export class WazuhService {
   }
 
   /**
-   * Extrae el título del CVE desde la descripción
+   * Construye la descripción del CVE usando la nueva estructura
    */
-  private extractTitle(description: string): string {
-    // Buscar la primera línea que parezca un título
-    const lines = description.split('\n');
+  private buildDescription(vulnerability: ElasticsearchHit['_source']['data']['vulnerability']): string {
+    const parts = [];
     
-    // Buscar líneas con "Security Fix(es):" o similar
-    const securityFixIndex = lines.findIndex((line) =>
-      line.includes('Security Fix(es):')
-    );
-
-    if (securityFixIndex !== -1 && lines[securityFixIndex + 2]) {
-      // La siguiente línea después de un espacio suele ser el título
-      const titleLine = lines[securityFixIndex + 2].trim();
-      // Remover asteriscos y limpiar
-      return titleLine.replace(/^\*\s*/, '').split('(CVE-')[0].trim();
+    if (vulnerability.type) {
+      parts.push(`Tipo: ${vulnerability.type}`);
     }
+    
+    if (vulnerability.rationale) {
+      parts.push(`Descripción: ${vulnerability.rationale}`);
+    }
+    
+    if (vulnerability.reference) {
+      parts.push(`Referencias: ${vulnerability.reference}`);
+    }
+    
+    if (vulnerability.package) {
+      parts.push(`Paquete afectado: ${vulnerability.package.name} (${vulnerability.package.version})`);
+    }
+    
+    return parts.join('\n\n');
+  }
 
-    // Si no se encuentra un patrón, usar las primeras palabras
-    const firstSentence = description.split('.')[0];
-    return firstSentence.length > 100
-      ? firstSentence.substring(0, 97) + '...'
-      : firstSentence;
+  /**
+   * Extrae el título del CVE desde la nueva estructura
+   */
+  private extractTitle(vulnerability: ElasticsearchHit['_source']['data']['vulnerability']): string {
+    // Usar directamente el título de la vulnerabilidad
+    return vulnerability.title || vulnerability.cve;
   }
 
 

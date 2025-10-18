@@ -485,7 +485,7 @@ export class JiraService {
           type: 'paragraph',
           content: [
             { type: 'text', text: 'CVE: ', marks: [{ type: 'strong' }] },
-            { type: 'text', text: cve.cve }
+            { type: 'text', text: cve.title }
           ]
         },
         {
@@ -505,6 +505,20 @@ export class JiraService {
         {
           type: 'paragraph',
           content: [
+            { type: 'text', text: 'Level: ', marks: [{ type: 'strong' }] },
+            { type: 'text', text: 'N/A' } // Este campo no está disponible en la estructura actual
+          ]
+        },
+        {
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: 'Publicada: ', marks: [{ type: 'strong' }] },
+            { type: 'text', text: cve.published || 'N/A' }
+          ]
+        },
+        {
+          type: 'paragraph',
+          content: [
             { type: 'text', text: 'Descripción:', marks: [{ type: 'strong' }] }
           ]
         },
@@ -519,13 +533,6 @@ export class JiraService {
           content: [
             { type: 'text', text: 'Servidores Afectados: ', marks: [{ type: 'strong' }] },
             { type: 'text', text: cve.affectedServers.length.toString() }
-          ]
-        },
-        {
-          type: 'paragraph',
-          content: [
-            { type: 'text', text: 'Publicado: ', marks: [{ type: 'strong' }] },
-            { type: 'text', text: cve.published || 'N/A' }
           ]
         },
         {
