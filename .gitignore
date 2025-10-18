@@ -64,3 +64,10 @@ jspm_packages/
 ehthumbs.db
 Thumbs.db
 
+
+#example files
+get-auth-token.js
+test-phase-1-mock.js
+test-phase-2-mock.js
+test-phase-3-mock.js
+test-phase-4-mock.js

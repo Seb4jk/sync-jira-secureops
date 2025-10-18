@@ -6,7 +6,7 @@
 import { Request, Response } from 'express';
 import { WazuhService } from '../services/wazuh.service';
 import { JiraService } from '../services/jira.service';
-import { SyncSummary } from '../types';
+import { SyncSummary, CVE } from '../types';
 import { sendSuccess } from '../utils/response';
 import { logger } from '../utils/logger';
 
@@ -23,18 +23,84 @@ export class VulnerabilitiesController {
   }
 
   /**
-   * Sincroniza las vulnerabilidades de Wazuh con Jira
+   * Obtiene datos mock para pruebas (separado de la lógica principal)
+   */
+  private getMockCVEs(): CVE[] {
+    return [
+      {
+        id: "CVE-TEST-001",
+        cve: "CVE-TEST-001",
+        title: "Test Vulnerability 1",
+        severity: "Critical",
+        cvss: 9.8,
+        description: "Test vulnerability for validation - Critical severity",
+        published: "2024-01-01T00:00:00Z",
+        modified: "2024-01-01T00:00:00Z",
+        affectedServers: [
+          {
+            id: "020",
+            name: "server636336.test.com",
+            hostname: "server636336.test.com",
+            ip: "192.168.1.399",
+            os: "Debian 10",
+            package: "test-package-server636336",
+            version: "3.0.0"
+          }
+        ]
+      },
+      {
+        id: "CVE-TEST-002",
+        cve: "CVE-TEST-002",
+        title: "Test Vulnerability 2",
+        severity: "High",
+        cvss: 7.5,
+        description: "Test vulnerability for validation - High severity",
+        published: "2024-01-02T00:00:00Z",
+        modified: "2024-01-02T00:00:00Z",
+        affectedServers: [
+          {
+            id: "004",
+            name: "server4.test.com",
+            hostname: "server4.test.com",
+            ip: "192.168.1.4",
+            os: "Ubuntu 22.04",
+            package: "test-package-4",
+            version: "4.0.0"
+          }
+        ]
+      }
+    ];
+  }
+
+  /**
+   * Sincroniza las vulnerabilidades de Wazuh con Jira (versión inteligente)
    * POST /vulnerabilities/sync
    */
   async syncVulnerabilities(_req: Request, res: Response): Promise<void> {
     const startTime = Date.now();
 
     try {
-      logger.info('Iniciando sincronización de vulnerabilidades');
+      logger.info('Iniciando sincronización inteligente de vulnerabilidades');
 
       // Obtener CVEs desde Wazuh
-      const cves = await this.wazuhService.getCVEs();
-      logger.info(`CVEs obtenidos de Wazuh: ${cves.length}`);
+      const wazuhCVEs = await this.wazuhService.getCVEs();
+      logger.info(`CVEs obtenidos de Wazuh: ${wazuhCVEs.length}`);
+
+      // Inyectar datos mock si está habilitado
+      let cves: CVE[] = [...wazuhCVEs];
+      
+      console.log(`🔍 DEBUG: USE_MOCK_DATA = "${process.env.USE_MOCK_DATA}"`);
+      console.log(`🔍 DEBUG: Comparación === 'true': ${process.env.USE_MOCK_DATA === 'true'}`);
+      
+      if (process.env.USE_MOCK_DATA === 'true') {
+        logger.info('Modo mock habilitado, inyectando datos de prueba');
+        const mockCVEs = this.getMockCVEs();
+        cves = [...wazuhCVEs, ...mockCVEs];
+        logger.info(`CVEs totales (Wazuh + Mock): ${cves.length}`);
+        console.log('📋 MODO MOCK ACTIVADO - Datos adicionales inyectados');
+      } else {
+        console.log('📋 MODO MOCK DESACTIVADO - Solo datos de Wazuh');
+      }
 
       // Inicializar resumen
       const summary: SyncSummary = {
@@ -46,24 +112,43 @@ export class VulnerabilitiesController {
         details: [],
       };
 
-      // Procesar cada CVE
+      // Procesar cada CVE con sincronización inteligente
       for (const cve of cves) {
         try {
-          logger.info(`Procesando CVE: ${cve.cve}`);
+          logger.info(`Procesando CVE con sincronización inteligente: ${cve.cve}`);
+          console.log(`\n=== PROCESANDO CVE EN JIRA ===`);
+          console.log(`CVE: ${cve.cve}`);
+          console.log(`Servidores afectados: ${cve.affectedServers.length}`);
+          console.log(`Datos de servidores:`, JSON.stringify(cve.affectedServers, null, 2));
+          console.log(`===============================`);
 
-          // Crear tarea en Jira con sus subtareas
-          const jiraTask = await this.jiraService.createTaskWithSubtasks(cve);
+          // Usar sincronización inteligente
+          const jiraTask = await this.jiraService.syncTaskWithSubtasks(cve);
 
           summary.cvesProcessed++;
-          summary.tasksCreated++;
-          summary.subtasksCreated += jiraTask.subtasks?.length || 0;
+          
+          // Determinar si fue creada o actualizada
+          const existingTask = await this.jiraService.findTaskByCVE(cve.cve);
+          if (existingTask && existingTask.key === jiraTask.key) {
+            // Fue actualizada
+            summary.details.push({
+              cve: cve.cve,
+              taskKey: jiraTask.key,
+              subtasksCount: jiraTask.subtasks?.length || 0,
+              status: 'success',
+            });
+          } else {
+            // Fue creada
+            summary.tasksCreated++;
+            summary.details.push({
+              cve: cve.cve,
+              taskKey: jiraTask.key,
+              subtasksCount: jiraTask.subtasks?.length || 0,
+              status: 'success',
+            });
+          }
 
-          summary.details.push({
-            cve: cve.cve,
-            taskKey: jiraTask.key,
-            subtasksCount: jiraTask.subtasks?.length || 0,
-            status: 'success',
-          });
+          summary.subtasksCreated += jiraTask.subtasks?.length || 0;
 
           logger.info(`CVE procesado exitosamente: ${cve.cve}`, {
             taskKey: jiraTask.key,
@@ -83,10 +168,30 @@ export class VulnerabilitiesController {
         }
       }
 
+      // Finalizar CVEs que ya no existen
+      try {
+        logger.info('Verificando CVEs eliminados para finalizar');
+        await this.jiraService.finalizeDeletedCVEs(cves);
+        logger.info('CVEs eliminados procesados');
+      } catch (error) {
+        logger.error('Error al finalizar CVEs eliminados', { error });
+        summary.errors++;
+      }
+
+      // Finalizar subtareas huérfanas (que ya no tienen servidores correspondientes)
+      try {
+        logger.info('Verificando subtareas huérfanas para finalizar');
+        await this.jiraService.finalizeOrphanSubtasks(cves);
+        logger.info('Subtareas huérfanas procesadas');
+      } catch (error) {
+        logger.error('Error al finalizar subtareas huérfanas', { error });
+        summary.errors++;
+      }
+
       // Calcular duración
       summary.duration = Date.now() - startTime;
 
-      logger.info('Sincronización completada', {
+      logger.info('Sincronización inteligente completada', {
         cvesProcessed: summary.cvesProcessed,
         tasksCreated: summary.tasksCreated,
         subtasksCreated: summary.subtasksCreated,
@@ -96,12 +201,12 @@ export class VulnerabilitiesController {
 
       sendSuccess(
         res,
-        'Sincronización completada exitosamente',
+        'Sincronización inteligente completada exitosamente',
         summary,
         200
       );
     } catch (error) {
-      logger.error('Error en la sincronización', { error });
+      logger.error('Error en la sincronización inteligente', { error });
       throw error;
     }
   }
