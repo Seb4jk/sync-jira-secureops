@@ -38,6 +38,13 @@ export const config = {
     projectKey: process.env.JIRA_PROJECT_KEY || 'VULN',
   },
 
+  // OpenAI API
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY || '',
+    model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    maxTokens: parseInt(process.env.OPENAI_MAX_TOKENS || '4000', 10),
+  },
+
   // CORS
   cors: {
     origin: process.env.CORS_ORIGIN || '*',

@@ -127,3 +127,80 @@ export interface LoginResponse {
   };
 }
 
+/**
+ * Playbook de acción generado por OpenAI
+ */
+export interface PlaybookResponse {
+  Executive_Summary: ExecutiveSummary;
+  Threat_Landscape_Analysis: ThreatAnalysis[];
+  Strategic_Remediation_Plan: RemediationPlan;
+  Operational_Considerations: OperationalConsiderations;
+  Risk_Mitigation: RiskMitigation;
+}
+
+/**
+ * Resumen ejecutivo del playbook
+ */
+export interface ExecutiveSummary {
+  Critical_Threats: string;
+  Business_Impact: string;
+  Remediation_Timeline: string;
+}
+
+/**
+ * Análisis de amenazas específicas
+ */
+export interface ThreatAnalysis {
+  CVE: string;
+  Threat_Category: string;
+  Attack_Vector: string;
+  Business_Criticality: string;
+  Exploit_Probability: string;
+  Remediation_Complexity: string;
+  Downtime_Required: string;
+  Risk_Assessment: string;
+}
+
+/**
+ * Plan estratégico de remediación
+ */
+export interface RemediationPlan {
+  Phase_1_Immediate: RemediationPhase;
+  Phase_2_Short_Term: RemediationPhase;
+  Phase_3_Long_Term: RemediationPhase;
+}
+
+/**
+ * Fase de remediación
+ */
+export interface RemediationPhase {
+  Timeline: string;
+  Actions: string[];
+  Resources_Required?: string[];
+  Success_Criteria?: string[];
+  Dependencies?: string[];
+  Rollback_Plan?: string[];
+  Process_Improvements?: string[];
+  Monitoring_Strategy?: string[];
+}
+
+/**
+ * Consideraciones operacionales
+ */
+export interface OperationalConsiderations {
+  Change_Management: string;
+  Communication_Plan: string;
+  Testing_Strategy: string;
+  Documentation_Requirements: string;
+}
+
+/**
+ * Mitigación de riesgos
+ */
+export interface RiskMitigation {
+  Compensating_Controls: string[];
+  Monitoring_Enhancements: string[];
+  Incident_Response: string[];
+  Business_Continuity: string[];
+}
+

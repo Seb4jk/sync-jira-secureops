@@ -6,9 +6,13 @@
 import { Request, Response } from 'express';
 import { WazuhService } from '../services/wazuh.service';
 import { JiraService } from '../services/jira.service';
+import { OpenAIService } from '../services/openai.service';
 import { SyncSummary, CVE } from '../types';
 import { sendSuccess } from '../utils/response';
 import { logger } from '../utils/logger';
+import fs from 'fs';
+import path from 'path';
+import { readCVEsFile, chunkCVEs, getLatestCVEsFile } from '../utils/fileProcessor';
 
 /**
  * Controlador de vulnerabilidades
@@ -16,10 +20,51 @@ import { logger } from '../utils/logger';
 export class VulnerabilitiesController {
   private wazuhService: WazuhService;
   private jiraService: JiraService;
+  private openaiService: OpenAIService;
 
   constructor() {
     this.wazuhService = new WazuhService();
     this.jiraService = new JiraService();
+    this.openaiService = new OpenAIService();
+  }
+
+  /**
+   * Guarda los datos de CVEs como archivo JSON en el proyecto
+   */
+  private async saveCVEsToFile(cves: CVE[]): Promise<string> {
+    try {
+      // Crear directorio downloads si no existe
+      const downloadsDir = path.join(process.cwd(), 'downloads');
+      if (!fs.existsSync(downloadsDir)) {
+        fs.mkdirSync(downloadsDir, { recursive: true });
+      }
+
+      // Generar nombre único con timestamp
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `cves-${timestamp}.json`;
+      const filePath = path.join(downloadsDir, filename);
+
+      // Preparar datos para guardar
+      const dataToSave = {
+        timestamp: new Date().toISOString(),
+        count: cves.length,
+        cves: cves
+      };
+
+      // Escribir archivo
+      fs.writeFileSync(filePath, JSON.stringify(dataToSave, null, 2), 'utf8');
+
+      logger.info('Archivo de CVEs guardado exitosamente', {
+        filename,
+        path: filePath,
+        count: cves.length
+      });
+
+      return filePath;
+    } catch (error) {
+      logger.error('Error al guardar archivo de CVEs', { error });
+      throw new Error(`Error al guardar archivo: ${error instanceof Error ? error.message : 'Error desconocido'}`);
+    }
   }
 
   /**
@@ -213,18 +258,33 @@ export class VulnerabilitiesController {
 
   /**
    * Obtiene la lista de CVEs desde Wazuh
-   * GET /vulnerabilities/cves
+   * GET /vulnerabilities/cves?download=true
    */
-  async getCVEs(_req: Request, res: Response): Promise<void> {
+  async getCVEs(req: Request, res: Response): Promise<void> {
     try {
-      logger.info('Obteniendo lista de CVEs');
+      const download = req.query.download === 'true';
+      logger.info('Obteniendo lista de CVEs', { download });
 
       const cves = await this.wazuhService.getCVEs();
 
-      sendSuccess(res, 'CVEs obtenidos exitosamente', {
-        count: cves.length,
-        cves,
-      });
+      // Si se solicita descarga, guardar como archivo JSON
+      if (download) {
+        const filePath = await this.saveCVEsToFile(cves);
+        const filename = path.basename(filePath);
+        
+        sendSuccess(res, 'CVEs obtenidos y guardados exitosamente', {
+          count: cves.length,
+          filename,
+          filePath,
+          message: `Archivo guardado en: ${filePath}`
+        });
+      } else {
+        // Respuesta normal sin descarga
+        sendSuccess(res, 'CVEs obtenidos exitosamente', {
+          count: cves.length,
+          cves,
+        });
+      }
     } catch (error) {
       logger.error('Error al obtener CVEs', { error });
       throw error;
@@ -250,6 +310,102 @@ export class VulnerabilitiesController {
       sendSuccess(res, 'Detalles del CVE obtenidos', cve);
     } catch (error) {
       logger.error('Error al obtener detalles del CVE', { error });
+      throw error;
+    }
+  }
+
+  /**
+   * Genera un playbook de acción usando OpenAI
+   * POST /vulnerabilities/generate-playbook
+   */
+  async generatePlaybook(req: Request, res: Response): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      logger.info('Iniciando generación de playbook con OpenAI');
+
+      // Validar configuración de OpenAI
+      if (!this.openaiService.validateConfiguration()) {
+        sendSuccess(res, 'OpenAI no está configurado correctamente', null, 400);
+        return;
+      }
+
+      // Obtener archivo de CVEs (usar el más reciente por defecto)
+      const { filePath } = req.body;
+      const targetFile = filePath || getLatestCVEsFile();
+
+      if (!targetFile) {
+        sendSuccess(res, 'No se encontró archivo de CVEs. Ejecuta primero GET /vulnerabilities/cves?download=true', null, 404);
+        return;
+      }
+
+      logger.info('Procesando archivo de CVEs', { filePath: targetFile });
+
+      // Leer archivo de CVEs
+      const fileData = readCVEsFile(targetFile);
+      const cves = fileData.cves;
+
+      if (cves.length === 0) {
+        sendSuccess(res, 'No hay CVEs para procesar', null, 400);
+        return;
+      }
+
+      // Dividir en chunks
+      const chunkingResult = chunkCVEs(cves);
+      logger.info('CVEs divididos en chunks', {
+        totalCVEs: chunkingResult.totalCVEs,
+        totalChunks: chunkingResult.totalChunks
+      });
+
+      // Procesar cada chunk con OpenAI
+      const chunkResults: string[] = [];
+      
+      for (let i = 0; i < chunkingResult.chunks.length; i++) {
+        const chunk = chunkingResult.chunks[i];
+        logger.info(`Procesando chunk ${i + 1}/${chunkingResult.totalChunks}`);
+        
+        const chunkResult = await this.openaiService.processCVEChunk(
+          chunk, 
+          i, 
+          chunkingResult.totalChunks
+        );
+        
+        chunkResults.push(chunkResult);
+        
+        // Pausa más larga entre requests para evitar rate limiting
+        if (i < chunkingResult.chunks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 3000)); // 3 segundos de pausa
+        }
+      }
+
+      // Generar playbook final unificado
+      logger.info('Generando playbook final unificado');
+      const playbook = await this.openaiService.generateFinalPlaybook(chunkResults);
+
+      // Calcular duración
+      const duration = Date.now() - startTime;
+
+      logger.info('Playbook generado exitosamente', {
+        duration: `${duration}ms`,
+        totalCVEs: chunkingResult.totalCVEs,
+        totalChunks: chunkingResult.totalChunks,
+        threatAnalysisCount: playbook.Threat_Landscape_Analysis.length,
+        remediationPhases: Object.keys(playbook.Strategic_Remediation_Plan).length
+      });
+
+      sendSuccess(res, 'Playbook generado exitosamente', {
+        playbook,
+        metadata: {
+          sourceFile: targetFile,
+          totalCVEs: chunkingResult.totalCVEs,
+          totalChunks: chunkingResult.totalChunks,
+          duration: `${duration}ms`,
+          generatedAt: new Date().toISOString()
+        }
+      });
+
+    } catch (error) {
+      logger.error('Error al generar playbook', { error });
       throw error;
     }
   }

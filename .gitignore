@@ -71,3 +71,6 @@ test-phase-1-mock.js
 test-phase-2-mock.js
 test-phase-3-mock.js
 test-phase-4-mock.js
+
+# Downloaded files
+downloads/

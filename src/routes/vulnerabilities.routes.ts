@@ -46,5 +46,16 @@ router.get(
   asyncHandler(vulnerabilitiesController.getCVEDetails.bind(vulnerabilitiesController))
 );
 
+/**
+ * POST /vulnerabilities/generate-playbook
+ * Genera un playbook de acción usando OpenAI
+ * Requiere autenticación
+ */
+router.post(
+  '/generate-playbook',
+  authenticateToken,
+  asyncHandler(vulnerabilitiesController.generatePlaybook.bind(vulnerabilitiesController))
+);
+
 export default router;
 
