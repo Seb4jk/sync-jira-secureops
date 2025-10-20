@@ -379,7 +379,7 @@ export class VulnerabilitiesController {
       }
 
       // Generar playbook final unificado
-      logger.info('Generando playbook final unificado');
+      logger.info('Iniciando generación del playbook final unificado');
       const playbook = await this.openaiService.generateFinalPlaybook(chunkResults);
 
       // Calcular duración
